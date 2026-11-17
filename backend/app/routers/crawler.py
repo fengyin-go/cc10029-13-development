@@ -10,9 +10,11 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload
 from app.services.crawler import CrawlerService
+from app.services.retry_execution import RetryExecutionService
 
 router = APIRouter(prefix="/api/crawler", tags=["爬虫引擎"])
 service = CrawlerService()
+retry_execution_service = RetryExecutionService()
 LIST_FIELDS = ["任务编号", "任务名称", "关联站点", "关联规则", "并发线程", "调度周期", "超时秒数", "下发批次"]
 STATUSES = ["草稿", "待校验", "已启用", "已停用"]
 
@@ -44,6 +46,25 @@ def export_entries() -> StreamingResponse:
     buf.seek(0)
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8",
                              headers={"Content-Disposition": "attachment; filename=crawler.csv"})
+
+
+@router.get("/retry-assignments")
+def get_retry_assignments(
+    task_code: str | None = Query(default=None, alias="爬虫任务编号",
+                                  description="可选：只取指定爬虫任务的重试分配"),
+) -> dict[str, Any]:
+    """跨业务面消费失败重试的重试任务分配清单。
+
+    状态由失败重试侧的重试执行数据集投影而来，只包含尚未成功且未达到上限的批次；
+    已成功或已达上限的批次在这里不可见。
+    """
+    items = retry_execution_service.build_assignment_list(task_code=task_code)
+    return {
+        "items": items,
+        "total": len(items),
+        "source": "retry_execution_dataset",
+        "dataset_version": retry_execution_service.get_dataset_version(),
+    }
 
 
 @router.get("/{entry_id}")

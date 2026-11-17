@@ -75,5 +75,30 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 失败重试：幂等重试批次与重试执行数据集
+
+失败重试模块在原重试策略 CRUD 之外，新增了按任务批次统一管理的重试执行数据集，
+领域规则集中在 `backend/app/services/retry_execution.py`，数据集与模块表隔离存放于
+内存仓库（`retry_failure_batch` / `retry_execution` / `retry_assignment`）。
+
+| 能力 | 接口 |
+| --- | --- |
+| 失败事件接入（幂等标识去重，重复事件不建第二份执行记录） | `POST /api/retry/failure-events` |
+| 失败批次 / 执行数据集核对 | `GET /api/retry/failure-batches`、`GET /api/retry/executions` |
+| 人工/定时重试提交（并发只保留一份带最终执行次数的记录） | `POST /api/retry/retry-requests` |
+| 整组执行、批内逐条回执（部分失败只补排不覆盖） | `POST /api/retry/execution-receipts` |
+| 重试任务分配清单（只含尚未成功且未达上限的批次） | `GET /api/retry/assignment-list`、`GET /api/crawler/retry-assignments` |
+| 数据集版本切换（既有输入输出字段不变） | `GET/POST /api/retry/dataset-version[/switch]` |
+
+关键约束：
+
+- 失败批次、幂等标识、执行数据集与分配清单在同一事务写入；任一步失败按快照整体回滚
+  （见 `Store.transaction`）。
+- 同一请求幂等号第二次提交只记一次，按既有成功回执返回。
+- 人工重试与定时重试并发提交由锁 + 乐观版本号（`期望版本号`，冲突返回 409）串行化，
+  下游只存在一份重试记录。
+- 退避时间、重试次数、状态记录全部挂在执行数据集记录上，状态经分配清单投影到跨业务面
+  爬虫引擎；前端「失败重试」页底部工作台可核对失败批次、次数、退避、回执与并发留痕。
+
 领域：数据工程
 子方向：数据采集、爬虫与RPA
